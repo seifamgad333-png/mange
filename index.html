@@ -62,6 +62,16 @@ input:focus-visible,select:focus-visible,button:focus-visible{outline:3px solid 
     <div class="empty" id="lmsg">سجّل دخولك بحساب Google عشان تشوف مصروفات الأسرة وتسجّل.</div>
     <button class="primary" id="gl" type="button">تسجيل الدخول بحساب Google</button>
   </section>
+  <section class="panel" id="setup" hidden>
+    <h2>أهلاً بيك 👋</h2>
+    <label for="sname">اسمك</label>
+    <input id="sname" maxlength="20">
+    <button class="primary" id="mk" type="button">إنشاء بيت جديد</button>
+    <label for="scode" style="margin-top:20px">أو انضم لبيت أسرتك بالكود</label>
+    <input id="scode" maxlength="8" placeholder="مثال: K7M2QX9A" dir="ltr">
+    <button class="primary" id="jn" type="button">انضمام بالكود</button>
+    <div class="err" id="smsg" role="alert"></div>
+  </section>
   <div id="app" hidden>
   <div class="month">
     <button id="next" aria-label="الشهر التالي">›</button>
@@ -98,6 +108,7 @@ input:focus-visible,select:focus-visible,button:focus-visible{outline:3px solid 
     <h2>مصروفات الشهر</h2>
     <div id="list"></div>
   </section>
+  <section class="panel"><h2>كود الأسرة</h2><div id="hcode" style="font-size:26px;font-weight:800;letter-spacing:3px;direction:ltr;text-align:center"></div><div class="empty" style="padding:6px 0 0;font-size:13px">ابعت الكود ده لأفراد أسرتك عشان يدخلوا نفس البيت من خانة "الانضمام بالكود". ما تبعتوش لحد غريب.</div></section>
   <div style="text-align:center;margin-top:8px"><button class="chip" id="out" type="button">تسجيل خروج</button></div>
   </div>
 </main>
@@ -168,39 +179,91 @@ chips();render();
 <script type="module">
 import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {getAuth,onAuthStateChanged,signInWithPopup,GoogleAuthProvider,signOut} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import {getFirestore,collection,doc,addDoc,setDoc,deleteDoc,onSnapshot,getDocs} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {getFirestore,collection,doc,addDoc,setDoc,updateDoc,deleteDoc,onSnapshot,getDocs,getDoc,arrayUnion} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
-/* الصق إعدادات Firebase هنا بدل كلمة PASTE */
 const firebaseConfig={apiKey:"AIzaSyCX3g7SFlEoTUmVQxv7HOkjOQMXfQ3rSGE",authDomain:"test-1-fbaf8.firebaseapp.com",projectId:"test-1-fbaf8",appId:"1:723355751794:web:9114d0ba03db54b2a339eb"};
 
-if(Object.values(firebaseConfig).some(v=>String(v).indexOf("PASTE")===0)){
-  $("login").hidden=false;$("app").hidden=true;$("gl").disabled=true;
-  $("lmsg").textContent="لسه ماحطّتش إعدادات Firebase في الملف.";
-}else{
-  const app=initializeApp(firebaseConfig),auth=getAuth(app),fs=getFirestore(app);
-  const wrap=s=>({id:s.id,exists:s.exists(),data:()=>s.data()});
-  const adapter={
+const app=initializeApp(firebaseConfig),auth=getAuth(app),fs=getFirestore(app);
+const ALPHA="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+function newCode(){const a=new Uint32Array(8);crypto.getRandomValues(a);return Array.from(a,x=>ALPHA[x%ALPHA.length]).join("")}
+function view(n){$("login").hidden=n!=="login";$("setup").hidden=n!=="setup";$("app").hidden=n!=="app"}
+function saveWho(n){try{localStorage.setItem("who",n)}catch(e){}}
+
+function makeAdapter(hid){
+  const H=doc(fs,"households",hid);
+  return{
     collection:n=>({
-      add:d=>addDoc(collection(fs,n),d),
-      onSnapshot:(f,e)=>onSnapshot(collection(fs,n),s=>f({docs:s.docs}),e),
-      get:()=>getDocs(collection(fs,n)).then(s=>({docs:s.docs}))}),
-    doc:p=>({
-      set:d=>setDoc(doc(fs,p),d),
-      delete:()=>deleteDoc(doc(fs,p)),
-      onSnapshot:(f,e)=>onSnapshot(doc(fs,p),s=>f(wrap(s)),e)})
+      add:d=>addDoc(collection(H,n),d),
+      onSnapshot:(f,e)=>onSnapshot(collection(H,n),s=>f({docs:s.docs}),e),
+      get:()=>getDocs(collection(H,n)).then(s=>({docs:s.docs}))}),
+    doc:p=>{
+      if(p==="meta/members")return{
+        set:d=>updateDoc(H,{members:d.list}),
+        onSnapshot:(f,e)=>onSnapshot(H,s=>f({exists:s.exists(),data:()=>({list:(s.data()||{}).members||[]})}),e)};
+      return{delete:()=>deleteDoc(doc(H,"expenses",p.split("/")[1]))};
+    }
   };
-  let started=false;
-  $("gl").onclick=()=>signInWithPopup(auth,new GoogleAuthProvider()).catch(fail);
-  $("out").onclick=()=>signOut(auth).then(()=>location.reload());
-  onAuthStateChanged(auth,u=>{
-    $("login").hidden=!!u;$("app").hidden=!u;
-    if(!u){DB=null;return}
-    DB=adapter;
-    if(started)return;started=true;
-    adapter.collection("expenses").onSnapshot(s=>{S.expenses=s.docs.map(d=>{const x=Object.assign({},d.data());x.id=d.id;return x});render()},fail);
-    adapter.doc("meta/members").onSnapshot(s=>{const d=s.exists?s.data():null;if(d&&d.list&&d.list.length)S.members=d.list;chips();render()},fail);
-  });
 }
+
+let started=false;
+async function start(hid){
+  DB=makeAdapter(hid);
+  $("hcode").textContent=hid;
+  view("app");
+  if(started)return;started=true;
+  DB.collection("expenses").onSnapshot(s=>{S.expenses=s.docs.map(d=>{const x=Object.assign({},d.data());x.id=d.id;return x});render()},fail);
+  DB.doc("meta/members").onSnapshot(s=>{const d=s.exists?s.data():null;if(d&&d.list&&d.list.length)S.members=d.list;chips();render()},fail);
+}
+async function enter(u){
+  const snap=await getDoc(doc(fs,"users",u.uid));
+  if(snap.exists()&&snap.data().hid){await start(snap.data().hid);return}
+  $("sname").value=(u.displayName||"").split(" ")[0];
+  view("setup");
+}
+
+$("gl").onclick=()=>signInWithPopup(auth,new GoogleAuthProvider()).catch(fail);
+$("out").onclick=()=>signOut(auth).then(()=>location.reload());
+
+$("mk").onclick=async()=>{
+  const name=$("sname").value.trim();
+  if(!name){$("smsg").textContent="اكتب اسمك الأول.";return}
+  $("smsg").textContent="";
+  const uid=auth.currentUser.uid;
+  try{
+    let hid;
+    for(let i=0;i<5;i++){
+      hid=newCode();
+      try{await setDoc(doc(fs,"households",hid),{owner:uid,uids:[uid],members:[name]});break}
+      catch(e){if(i===4)throw e}
+    }
+    await setDoc(doc(fs,"users",uid),{hid:hid});
+    saveWho(name);
+    await start(hid);
+  }catch(e){fail(e)}
+};
+
+$("jn").onclick=async()=>{
+  const name=$("sname").value.trim();
+  const code=$("scode").value.replace(/\s/g,"").toUpperCase();
+  if(!name){$("smsg").textContent="اكتب اسمك الأول.";return}
+  if(code.length!==8){$("smsg").textContent="الكود لازم يكون 8 حروف وأرقام.";return}
+  $("smsg").textContent="";
+  const uid=auth.currentUser.uid,H=doc(fs,"households",code);
+  try{
+    await updateDoc(H,{uids:arrayUnion(uid)});
+    await updateDoc(H,{members:arrayUnion(name)});
+    await setDoc(doc(fs,"users",uid),{hid:code});
+    saveWho(name);
+    await start(code);
+  }catch(e){
+    $("smsg").textContent=(e.code==="not-found"||e.code==="permission-denied")?"الكود ده مش صح.":"تعذّر الانضمام، جرّب تاني.";
+  }
+};
+
+onAuthStateChanged(auth,u=>{
+  if(!u){DB=null;view("login");return}
+  enter(u).catch(fail);
+});
 </script>
 </body>
 </html>
